@@ -8,7 +8,7 @@ export class VoiceCommandService extends BaseVoiceService {
 
   async processCommand(text: string): Promise<VoiceCommand> {
     try {
-      let intent = 'unknown';
+      const intent = 'unknown';
       const entities: Record<string, any> = {};
       
       if (groqService.isConfigured()) {

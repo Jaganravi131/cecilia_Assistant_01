@@ -14,15 +14,8 @@ import {
 } from "lucide-react";
 
 const Sidebar: React.FC = () => {
-  // Create a fallback location object if not within a Router context
-  let location = { pathname: "/" };
-  try {
-    location = useLocation();
-  } catch (error) {
-    console.warn("Sidebar: useLocation hook failed, using fallback location");
-  }
-  
-  const currentPath = location.pathname;
+  const location = useLocation();
+  const currentPath = location.pathname ?? "/";
   
   const menuItems = [
     { name: "Dashboard", path: "/", icon: LayoutDashboard },
