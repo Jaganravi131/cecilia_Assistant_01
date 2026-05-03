@@ -1,522 +1,188 @@
 
-/**
- * Groq API Integration Service
- * 
- * This service provides functions to interact with Groq's AI features:
- * - Natural language processing
- * - Chat completions
- * - Voice transcription (speech-to-text)
- * - Text-to-speech
- * - Vision capabilities
- * - Reasoning capabilities
- * - Agentic tooling
- */
+import Groq from 'groq-sdk';
 
-export interface GroqConfig {
-  apiKey: string;
+export interface GroqServiceOptions {
+  model?: string;
+  temperature?: number;
+  max_tokens?: number;
+  stream?: boolean;
+}
+
+export interface TTSOptions {
+  voice?: string;
   model?: string;
 }
 
-export interface GroqMessage {
-  role: 'system' | 'assistant' | 'user';
-  content: string | GroqMessageContent[];
-}
-
-export interface GroqMessageContent {
-  type: 'text' | 'image_url';
-  text?: string;
-  image_url?: {
-    url: string;
-  };
-}
-
-export interface GroqTool {
-  type: 'function';
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, any>;
-    strict?: boolean;
-  };
-}
-
-export interface GroqCompletionOptions {
-  temperature?: number;
-  maxCompletionTokens?: number;
-  stream?: boolean;
-  responseFormat?: { type: string };
-  top_p?: number;
-  stop?: string | string[] | null;
-  seed?: number;
-  tools?: GroqTool[];
-  toolChoice?: 'auto' | 'none' | { type: 'function'; function: { name: string } };
-  reasoning_format?: 'parsed' | 'raw' | 'hidden';
-}
-
-export interface GroqTranscriptionOptions {
-  language?: string;
-  prompt?: string;
-  responseFormat?: string;
-  timestampGranularities?: string[];
-  temperature?: number;
-}
-
-export interface GroqTextToSpeechOptions {
-  voice?: string;
-  responseFormat?: string;
-}
-
-export interface GroqCompletionResponse {
-  id: string;
-  choices: Array<{
-    index: number;
-    message: {
-      role: string;
-      content: string;
-      tool_calls?: Array<{
-        id: string;
-        type: 'function';
-        function: {
-          name: string;
-          arguments: string;
-        };
-      }>;
-    };
-    finishReason?: string;
-    reasoning?: string;
-  }>;
-  usage?: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-  };
-}
-
-export interface GroqStreamCompletionResponse {
-  id: string;
-  choices: Array<{
-    index: number;
-    delta: {
-      role?: string;
-      content?: string;
-    };
-    finishReason?: string;
-  }>;
-}
-
-// Type for stream processing
-type StreamParser = TransformStream<Uint8Array, GroqStreamCompletionResponse>;
-
 export class GroqService {
-  private apiKey: string;
-  private model: string;
-  private baseUrl = "https://api.groq.com/openai/v1";
-  private defaultChatModel = "llama-3.3-70b-versatile";
-  private defaultWhisperModel = "whisper-large-v3-turbo";
-  private defaultTTSModel = "playai-tts";
-  private defaultTTSVoice = "Fritz-PlayAI";
-  private defaultVisionModel = "meta-llama/llama-4-scout-17b-16e-instruct";
-  private defaultAgentModel = "compound-beta";
+  private client: Groq | null = null;
+  private apiKey: string | null = null;
+  private configured = false;
 
-  constructor(config: GroqConfig) {
-    this.apiKey = config.apiKey;
-    this.model = config.model || this.defaultChatModel;
+  constructor() {
+    this.initialize();
   }
 
-  /**
-   * Process a chat completion request with Groq API
-   */
-  async processChat(
-    messages: GroqMessage[],
-    options: GroqCompletionOptions = {}
-  ): Promise<GroqCompletionResponse> {
-    try {
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: options.stream ? this.model : this.model,
-          messages: messages,
-          temperature: options.temperature ?? 0.7,
-          max_completion_tokens: options.maxCompletionTokens ?? 1024,
-          stream: options.stream ?? false,
-          response_format: options.responseFormat,
-          top_p: options.top_p ?? 1.0,
-          stop: options.stop || null,
-          seed: options.seed,
-          tools: options.tools,
-          tool_choice: options.toolChoice,
-          reasoning_format: options.reasoning_format,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`Groq API error (${response.status}): ${errorData.error?.message || "Unknown error"}`);
-      }
-
-      const data = await response.json();
-      return data as GroqCompletionResponse;
-    } catch (error) {
-      console.error("Error processing chat with Groq:", error);
-      throw new Error(`Failed to process chat: ${error instanceof Error ? error.message : String(error)}`);
+  private initialize() {
+    const storedApiKey = localStorage.getItem('groq_api_key') || process.env.GROQ_API_KEY;
+    if (storedApiKey) {
+      this.setApiKey(storedApiKey);
     }
   }
 
-  /**
-   * Stream chat completion responses from Groq API
-   */
-  async streamChat(
-    messages: GroqMessage[],
-    options: GroqCompletionOptions = {}
-  ): Promise<ReadableStream<GroqStreamCompletionResponse> | null> {
+  setApiKey(apiKey: string) {
+    this.apiKey = apiKey;
+    this.client = new Groq({
+      apiKey: apiKey,
+      dangerouslyAllowBrowser: true
+    });
+    this.configured = true;
+    localStorage.setItem('groq_api_key', apiKey);
+  }
+
+  clearApiKey() {
+    this.apiKey = null;
+    this.client = null;
+    this.configured = false;
+    localStorage.removeItem('groq_api_key');
+  }
+
+  isConfigured(): boolean {
+    return this.configured && this.client !== null;
+  }
+
+  isReady(): boolean {
+    return this.configured && this.client !== null;
+  }
+
+  async processCommand(
+    message: string, 
+    options: GroqServiceOptions = {}
+  ): Promise<string> {
+    if (!this.isReady()) {
+      throw new Error('Groq service not configured. Please set API key.');
+    }
+
     try {
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: messages,
-          temperature: options.temperature ?? 0.7,
-          max_completion_tokens: options.maxCompletionTokens ?? 1024,
-          stream: true,
-          response_format: options.responseFormat,
-          top_p: options.top_p ?? 1.0,
-          stop: options.stop || null,
-          tools: options.tools,
-          tool_choice: options.toolChoice,
-          reasoning_format: options.reasoning_format,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`Groq API error (${response.status}): ${errorData.error?.message || "Unknown error"}`);
-      }
-
-      // Transform the response stream to handle SSE
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      
-      if (!reader) {
-        throw new Error("Failed to get response stream reader");
-      }
-      
-      return new ReadableStream<GroqStreamCompletionResponse>({
-        async start(controller) {
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              
-              const chunk = decoder.decode(value);
-              const lines = chunk.split("\n").filter(line => line.trim() !== "");
-              
-              for (const line of lines) {
-                if (line.startsWith("data: ")) {
-                  const data = line.slice(6);
-                  if (data === "[DONE]") {
-                    break;
-                  }
-                  
-                  try {
-                    const parsedData = JSON.parse(data);
-                    controller.enqueue(parsedData);
-                  } catch (e) {
-                    console.error("Error parsing SSE data:", e);
-                  }
-                }
-              }
-            }
-          } catch (error) {
-            controller.error(error);
-          } finally {
-            controller.close();
-            reader.releaseLock();
+      const completion = await this.client!.chat.completions.create({
+        messages: [
+          {
+            role: "system",
+            content: "You are CECILIA, an advanced AI assistant. Be helpful, concise, and professional. Provide accurate information and assist with various tasks."
+          },
+          {
+            role: "user",
+            content: message
           }
-        }
-      });
-    } catch (error) {
-      console.error("Error streaming chat with Groq:", error);
-      throw new Error(`Failed to stream chat: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * Process a simple natural language command
-   */
-  async processCommand(command: string): Promise<string> {
-    try {
-      const messages: GroqMessage[] = [
-        { role: "system", content: "You are Cecilia, a helpful AI assistant." },
-        { role: "user", content: command }
-      ];
-      
-      const result = await this.processChat(messages);
-      return result.choices[0]?.message.content || "";
-    } catch (error) {
-      console.error("Error processing command with Groq:", error);
-      throw new Error(`Failed to process command: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * Process commands with agentic capabilities (web search and code execution)
-   */
-  async processAgentCommand(command: string): Promise<string> {
-    try {
-      const messages: GroqMessage[] = [
-        { role: "system", content: "You are Cecilia, a helpful AI assistant with web search and code execution capabilities." },
-        { role: "user", content: command }
-      ];
-      
-      const originalModel = this.model;
-      this.model = this.defaultAgentModel;
-      
-      const result = await this.processChat(messages, {
-        temperature: 0.7,
-        maxCompletionTokens: 1024
-      });
-      
-      // Reset model to original
-      this.model = originalModel;
-      
-      return result.choices[0]?.message.content || "";
-    } catch (error) {
-      console.error("Error processing agent command with Groq:", error);
-      throw new Error(`Failed to process agent command: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * Process image with vision capabilities
-   */
-  async processImageWithText(imageUrl: string, question: string): Promise<string> {
-    try {
-      const messages: GroqMessage[] = [
-        { 
-          role: "user", 
-          content: [
-            { type: "text", text: question },
-            { type: "image_url", image_url: { url: imageUrl } }
-          ]
-        }
-      ];
-      
-      const originalModel = this.model;
-      this.model = this.defaultVisionModel;
-      
-      const result = await this.processChat(messages, {
-        temperature: 0.7,
-        maxCompletionTokens: 1024
-      });
-      
-      // Reset model to original
-      this.model = originalModel;
-      
-      return result.choices[0]?.message.content || "";
-    } catch (error) {
-      console.error("Error processing image with Groq:", error);
-      throw new Error(`Failed to process image: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * Implement voice transcription (speech-to-text) using Groq's Whisper model
-   */
-  async transcribeAudio(audioBlob: Blob, options: GroqTranscriptionOptions = {}): Promise<string> {
-    try {
-      // Create form data for the audio file
-      const formData = new FormData();
-      formData.append("file", audioBlob);
-      formData.append("model", this.defaultWhisperModel);
-      
-      if (options.language) {
-        formData.append("language", options.language);
-      }
-      
-      if (options.prompt) {
-        formData.append("prompt", options.prompt);
-      }
-      
-      if (options.responseFormat) {
-        formData.append("response_format", options.responseFormat);
-      }
-      
-      if (options.timestampGranularities) {
-        options.timestampGranularities.forEach(granularity => {
-          formData.append("timestamp_granularities[]", granularity);
-        });
-      }
-
-      if (options.temperature !== undefined) {
-        formData.append("temperature", options.temperature.toString());
-      }
-
-      const response = await fetch(`${this.baseUrl}/audio/transcriptions`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${this.apiKey}`,
-        },
-        body: formData,
+        ],
+        model: options.model || "llama-3.3-70b-versatile",
+        temperature: options.temperature || 0.7,
+        max_completion_tokens: options.max_tokens || 150,
+        stream: options.stream || false
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`Groq API error (${response.status}): ${errorData.error?.message || "Unknown error"}`);
+      if (options.stream) {
+        // Handle streaming response
+        return "Streaming response initiated";
       }
 
-      const data = await response.json();
-      return data.text;
+      return (completion as any).choices[0]?.message?.content || "I'm here to help, but I couldn't generate a response. Please try again.";
     } catch (error) {
-      console.error("Error transcribing audio with Groq:", error);
-      throw new Error(`Failed to transcribe audio: ${error instanceof Error ? error.message : String(error)}`);
+      console.error('Groq API Error:', error);
+      throw new Error('Failed to process command with Groq API');
     }
   }
 
-  /**
-   * Convert text to speech using Groq's TTS model
-   */
-  async textToSpeech(text: string, options: GroqTextToSpeechOptions = {}): Promise<ArrayBuffer> {
+  async processAgentCommand(message: string): Promise<string> {
+    return this.processWithAgent(message);
+  }
+
+  async transcribeAudio(audioFile: File): Promise<string> {
+    if (!this.isReady()) {
+      throw new Error('Groq service not configured. Please set API key.');
+    }
+
     try {
-      const response = await fetch(`${this.baseUrl}/audio/speech`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: this.defaultTTSModel,
-          input: text,
-          voice: options.voice || this.defaultTTSVoice,
-          response_format: options.responseFormat || "wav",
-        }),
+      const transcription = await this.client!.audio.transcriptions.create({
+        file: audioFile,
+        model: "whisper-large-v3-turbo",
+        language: "en",
+        response_format: "text"
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`Groq API error (${response.status}): ${errorData.error?.message || "Unknown error"}`);
-      }
-
-      return await response.arrayBuffer();
+      return String(transcription);
     } catch (error) {
-      console.error("Error generating speech with Groq:", error);
-      throw new Error(`Failed to generate speech: ${error instanceof Error ? error.message : String(error)}`);
+      console.error('Groq Transcription Error:', error);
+      throw new Error('Failed to transcribe audio');
     }
   }
 
-  /**
-   * Play text-to-speech audio
-   */
-  async speakText(text: string, options: GroqTextToSpeechOptions = {}): Promise<void> {
+  async speakText(text: string, options: TTSOptions = {}): Promise<void> {
+    if (!this.isReady()) {
+      throw new Error('Groq service not configured. Please set API key.');
+    }
+
     try {
-      const audioBuffer = await this.textToSpeech(text, options);
-      const audioBlob = new Blob([audioBuffer], { type: "audio/wav" });
+      const response = await this.client!.audio.speech.create({
+        model: options.model || "playai-tts",
+        input: text,
+        voice: options.voice || "Celeste-PlayAI"
+      });
+
+      const audioBuffer = await response.arrayBuffer();
+      const audioBlob = new Blob([audioBuffer], { type: 'audio/wav' });
       const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
       
+      const audio = new Audio(audioUrl);
       return new Promise((resolve, reject) => {
         audio.onended = () => {
           URL.revokeObjectURL(audioUrl);
           resolve();
         };
-        audio.onerror = (err) => {
-          URL.revokeObjectURL(audioUrl);
-          reject(err);
-        };
+        audio.onerror = reject;
         audio.play();
       });
     } catch (error) {
-      console.error("Error speaking text with Groq:", error);
-      throw new Error(`Failed to speak text: ${error instanceof Error ? error.message : String(error)}`);
+      console.error('Groq TTS Error:', error);
+      throw new Error('Failed to synthesize speech');
     }
   }
 
-  /**
-   * Submit a batch job to Groq API
-   */
-  async submitBatch(batchJobs: any[], options: { completionWindow?: string } = {}): Promise<any> {
+  async processWithAgent(message: string): Promise<string> {
+    if (!this.isReady()) {
+      throw new Error('Groq service not configured. Please set API key.');
+    }
+
     try {
-      const fileContent = batchJobs.map(job => JSON.stringify(job)).join('\n');
-      const fileBlob = new Blob([fileContent], { type: 'application/jsonl' });
-      const formData = new FormData();
-      formData.append('purpose', 'batch');
-      formData.append('file', fileBlob);
-
-      // Upload file
-      const fileResponse = await fetch(`${this.baseUrl}/files`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${this.apiKey}`
-        },
-        body: formData
+      const completion = await this.client!.chat.completions.create({
+        messages: [
+          {
+            role: "user",
+            content: message
+          }
+        ],
+        model: "compound-beta",
+        temperature: 0.5,
+        max_completion_tokens: 300
       });
 
-      if (!fileResponse.ok) {
-        const errorData = await fileResponse.json();
-        throw new Error(`Groq API file upload error (${fileResponse.status}): ${errorData.error?.message || "Unknown error"}`);
-      }
-
-      const fileData = await fileResponse.json();
-      const fileId = fileData.id;
-
-      // Create batch
-      const batchResponse = await fetch(`${this.baseUrl}/batches`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          input_file_id: fileId,
-          endpoint: '/v1/chat/completions',
-          completion_window: options.completionWindow || '24h'
-        })
-      });
-
-      if (!batchResponse.ok) {
-        const errorData = await batchResponse.json();
-        throw new Error(`Groq API batch creation error (${batchResponse.status}): ${errorData.error?.message || "Unknown error"}`);
-      }
-
-      return await batchResponse.json();
+      return (completion as any).choices[0]?.message?.content || "I couldn't process that request with agent capabilities.";
     } catch (error) {
-      console.error("Error submitting batch to Groq:", error);
-      throw new Error(`Failed to submit batch: ${error instanceof Error ? error.message : String(error)}`);
+      console.error('Groq Agent Error:', error);
+      throw new Error('Failed to process with agent capabilities');
     }
   }
 
-  /**
-   * Update API key
-   */
-  setApiKey(apiKey: string): void {
-    this.apiKey = apiKey;
+  reconfigure() {
+    this.initialize();
   }
 
-  /**
-   * Update model
-   */
-  setModel(model: string): void {
-    this.model = model;
-  }
-
-  /**
-   * Check if the service is properly configured
-   */
-  isConfigured(): boolean {
-    return Boolean(this.apiKey) && this.apiKey !== "YOUR_GROQ_API_KEY";
+  getConfiguration() {
+    return {
+      isConfigured: this.configured,
+      hasApiKey: !!this.apiKey
+    };
   }
 }
 
-// Export an instance with placeholder API key
-// In production, load this from environment variables or secure storage
-export const groqService = new GroqService({
-  apiKey: import.meta.env.VITE_GROQ_API_KEY || "YOUR_GROQ_API_KEY",
-  model: "llama-3.3-70b-versatile",
-});
+export const groqService = new GroqService();
+export default groqService;
